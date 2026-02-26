@@ -1,0 +1,80 @@
+#!/bin/bash
+#
+# Woffy Firmware — Build & Upload
+# Auto-detects ESP32 serial port, kills conflicting processes
+#
+
+SKETCH_DIR="$(cd "$(dirname "$0")/woffy_mx1508" && pwd)"
+FQBN="esp32:esp32:esp32"
+BAUD=921600
+
+# ── Auto-detect ESP32 serial port ──
+find_port() {
+    local patterns=(
+        /dev/cu.usbserial-*
+        /dev/cu.wchusbserial-*
+        /dev/cu.SLAB_USBtoUART*
+        /dev/cu.usbmodem-*
+    )
+    for pattern in "${patterns[@]}"; do
+        for port in $pattern; do
+            [ -e "$port" ] && echo "$port" && return 0
+        done
+    done
+    return 1
+}
+
+# ── Free the port ──
+free_port() {
+    local port="$1"
+    local pids
+    pids=$(lsof -t "$port" 2>/dev/null)
+    if [ -n "$pids" ]; then
+        echo "Killing processes on $port: $pids"
+        echo "$pids" | xargs kill -9 2>/dev/null
+        sleep 1
+    fi
+}
+
+# ── Main ──
+echo "=== Woffy Firmware Build & Upload ==="
+echo ""
+
+PORT=$(find_port)
+if [ -z "$PORT" ]; then
+    echo "ERROR: No ESP32 found. Check USB cable and connection."
+    echo "Searched: /dev/cu.usbserial-* /dev/cu.wchusbserial-* /dev/cu.SLAB_USBtoUART*"
+    exit 1
+fi
+echo "Port: $PORT"
+echo ""
+
+free_port "$PORT"
+
+echo "Compiling..."
+arduino-cli compile --fqbn "$FQBN" --output-dir "$SKETCH_DIR/build" "$SKETCH_DIR" 2>&1
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "COMPILE FAILED"
+    exit 1
+fi
+
+echo ""
+echo "Uploading to $PORT..."
+arduino-cli upload -p "$PORT" --fqbn "$FQBN" --input-dir "$SKETCH_DIR/build" 2>&1
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "UPLOAD FAILED — try holding BOOT button on ESP32 during upload"
+    exit 1
+fi
+
+echo ""
+echo "=== Upload Complete ==="
+
+# Auto-open serial monitor if --monitor or -m flag
+if [[ "$1" == "--monitor" || "$1" == "-m" ]]; then
+    echo ""
+    echo "Opening serial monitor..."
+    sleep 2
+    exec "$(dirname "$0")/sm" "$PORT"
+fi

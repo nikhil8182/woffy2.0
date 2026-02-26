@@ -1,148 +1,245 @@
 /*
- * Woffy Control UI — D-pad + Test Buttons
+ * Woffy 2.0 — HTML UI with Connection Status
  */
-
 #ifndef HTML_H
 #define HTML_H
 
-const char CONTROL_HTML[] PROGMEM = R"raw(
+const char PROGMEM CONTROL_HTML[] = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <title>Woffy Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Woffy 2.0</title>
   <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:system-ui,sans-serif;background:#1a1a2e;color:#eee;
-      min-height:100vh;display:flex;flex-direction:column;align-items:center;
-      justify-content:center;padding:1rem;gap:1.2rem}
-    h1{font-size:1.4rem;color:#00d9ff}
-    .pad{display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;width:240px}
-    .pad button{width:100%;aspect-ratio:1;border:none;border-radius:12px;
-      font-size:1.4rem;font-weight:bold;background:#16213e;color:#fff;
-      touch-action:manipulation;-webkit-tap-highlight-color:transparent}
-    .pad button:active{background:#0f3460;transform:scale(0.95)}
-    .pad .empty{background:transparent;pointer-events:none}
-    .pad .stop{background:#e94560;font-size:0.9rem}
-    .tests{display:flex;flex-direction:column;gap:0.4rem;width:240px}
-    .tests button{border:none;border-radius:10px;padding:0.7rem;
-      font-size:0.85rem;font-weight:600;color:#fff;
-      touch-action:manipulation;-webkit-tap-highlight-color:transparent}
-    .tests button:active{transform:scale(0.97);filter:brightness(0.85)}
-    .tests button:disabled{opacity:0.5}
-    .t-all{background:#e94560}
-    .t1{background:#0f3460}
-    .t2{background:#0f3460}
-    .t3{background:#0f3460}
-    .t4{background:#533483}
-    .t5{background:#0f3460}
-    .status{font-size:0.8rem;color:#888;min-height:1.2rem}
-    .slider-box{width:240px;text-align:center}
-    .slider-box label{font-size:0.85rem;color:#aaa}
-    .slider-box span{color:#00d9ff;font-weight:bold;font-size:1rem}
-    .slider-box input[type=range]{-webkit-appearance:none;width:100%;height:8px;
-      border-radius:4px;background:#16213e;outline:none;margin:0.5rem 0}
-    .slider-box input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;
-      width:28px;height:28px;border-radius:50%;background:#00d9ff;cursor:pointer}
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; 
+           background: #0a0a0f; color: #e0e0e0; min-height: 100vh; }
+    .container { max-width: 500px; margin: 0 auto; padding: 20px; }
+    
+    /* Status Bar */
+    .status-bar { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
+    .status-badge { 
+      padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; 
+      display: flex; align-items: center; gap: 6px;
+    }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .wifi-connected { background: #1a3a2a; color: #4ade80; }
+    .wifi-disconnected { background: #3a1a1a; color: #f87171; }
+    .mqtt-connected { background: #1a2a3a; color: #60a5fa; }
+    .mqtt-disconnected { background: #3a2a1a; color: #fb923c; }
+    .dot-green { background: #4ade80; }
+    .dot-red { background: #f87171; }
+    .dot-orange { background: #fb923c; }
+    
+    /* Header */
+    h1 { text-align: center; color: #00d4ff; font-size: 28px; margin-bottom: 5px; }
+    .subtitle { text-align: center; color: #666; font-size: 12px; margin-bottom: 20px; }
+    
+    /* Info Panel */
+    .info-panel { 
+      background: #12121a; border-radius: 12px; padding: 15px; margin-bottom: 20px;
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    }
+    .info-item { text-align: center; }
+    .info-label { font-size: 10px; color: #666; text-transform: uppercase; }
+    .info-value { font-size: 14px; color: #fff; margin-top: 2px; }
+    
+    /* Controls Grid */
+    .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+    .btn { 
+      aspect-ratio: 1; border: none; border-radius: 16px; font-size: 28px; cursor: pointer;
+      transition: all 0.15s ease; display: flex; align-items: center; justify-content: center;
+    }
+    .btn:active { transform: scale(0.95); }
+    .btn-up { background: linear-gradient(145deg, #2a2a3a, #1a1a2a); color: #00d4ff; grid-column: 2; }
+    .btn-left { background: linear-gradient(145deg, #2a2a3a, #1a1a2a); color: #fbbf24; }
+    .btn-right { background: linear-gradient(145deg, #2a2a3a, #1a1a2a); color: #fbbf24; }
+    .btn-down { background: linear-gradient(145deg, #2a2a3a, #1a1a2a); color: #f87171; grid-column: 2; }
+    .btn-stop { background: linear-gradient(145deg, #3a1a1a, #2a0a0a); color: #f87171; grid-column: 2; }
+    
+    /* Speed Slider */
+    .speed-panel { 
+      background: #12121a; border-radius: 12px; padding: 20px; margin-bottom: 20px; 
+    }
+    .speed-label { display: flex; justify-content: space-between; margin-bottom: 10px; }
+    .speed-value { color: #00d4ff; font-weight: bold; }
+    input[type="range"] {
+      width: 100%; height: 8px; border-radius: 4px; background: #2a2a3a;
+      -webkit-appearance: none; appearance: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%;
+      background: #00d4ff; cursor: pointer; box-shadow: 0 0 10px #00d4ff80;
+    }
+    
+    /* Command Input */
+    .cmd-panel { display: flex; gap: 10px; margin-bottom: 20px; }
+    .cmd-input { 
+      flex: 1; padding: 12px; border-radius: 8px; border: 1px solid #333;
+      background: #12121a; color: #fff; font-size: 14px;
+    }
+    .cmd-input:focus { outline: none; border-color: #00d4ff; }
+    .cmd-btn { 
+      padding: 12px 20px; border-radius: 8px; border: none; 
+      background: #00d4ff; color: #000; font-weight: bold; cursor: pointer;
+    }
+    
+    /* Log */
+    .log-panel { 
+      background: #0a0a0f; border: 1px solid #222; border-radius: 8px; 
+      padding: 12px; max-height: 150px; overflow-y: auto; font-family: monospace;
+    }
+    .log-entry { font-size: 12px; color: #666; margin: 2px 0; }
+    .log-entry:last-child { color: #00d4ff; }
+    
+    /* Footer */
+    .footer { text-align: center; margin-top: 20px; }
+    .footer a { color: #666; text-decoration: none; font-size: 12px; }
+    .footer a:hover { color: #00d4ff; }
   </style>
 </head>
 <body>
-  <h1>Woffy Control</h1>
-
-  <div class="slider-box">
-    <label>Speed: PWM <span id="sv">180</span> | ~<span id="rpm">212</span> RPM</label>
-    <input type="range" id="spd" min="60" max="255" value="180">
+  <div class="container">
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <div id="wifiStatus" class="status-badge wifi-disconnected">
+        <span id="wifiDot" class="status-dot dot-red"></span>
+        <span id="wifiText">Wi-Fi</span>
+      </div>
+      <div id="mqttStatus" class="status-badge mqtt-disconnected">
+        <span id="mqttDot" class="status-dot dot-orange"></span>
+        <span id="mqttText">MQTT</span>
+      </div>
+    </div>
+    
+    <h1>WOFFY 2.0</h1>
+    <p class="subtitle">MQTT + Wi-Fi Control</p>
+    
+    <!-- Info Panel -->
+    <div class="info-panel">
+      <div class="info-item">
+        <div class="info-label">SSID</div>
+        <div id="ssidVal" class="info-value">-</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">IP Address</div>
+        <div id="ipVal" class="info-value">-</div>
+      </div>
+    </div>
+    
+    <!-- D-Pad Controls -->
+    <div class="controls">
+      <button class="btn btn-up" onmousedown="sendCmd('forward')" ontouchstart="sendCmd('forward')" onmouseup="sendCmd('stop')" onmouseleave="sendCmd('stop')" ontouchend="sendCmd('stop')">▲</button>
+      <button class="btn btn-left" onmousedown="sendCmd('left')" ontouchstart="sendCmd('left')" onmouseup="sendCmd('stop')" onmouseleave="sendCmd('stop')" ontouchend="sendCmd('stop')">◀</button>
+      <button class="btn btn-right" onmousedown="sendCmd('right')" ontouchstart="sendCmd('right')" onmouseup="sendCmd('stop')" onmouseleave="sendCmd('stop')" ontouchend="sendCmd('stop')">▶</button>
+      <button class="btn btn-down" onmousedown="sendCmd('backward')" ontouchstart="sendCmd('backward')" onmouseup="sendCmd('stop')" onmouseleave="sendCmd('stop')" ontouchend="sendCmd('stop')">▼</button>
+      <button class="btn btn-stop" onclick="sendCmd('stop')">■ STOP</button>
+    </div>
+    
+    <!-- Speed Slider -->
+    <div class="speed-panel">
+      <div class="speed-label">
+        <span>Motor Speed</span>
+        <span id="speedVal" class="speed-value">180</span>
+      </div>
+      <input type="range" id="speedSlider" min="60" max="255" value="180" oninput="updateSpeed(this.value)">
+    </div>
+    
+    <!-- Command Input -->
+    <div class="cmd-panel">
+      <input type="text" id="cmdInput" class="cmd-input" placeholder="Command (fwd, bwd, left, right, stop)" onkeypress="if(event.key==='Enter')sendCustom()">
+      <button class="cmd-btn" onclick="sendCustom()">Send</button>
+    </div>
+    
+    <!-- Log -->
+    <div id="log" class="log-panel"></div>
+    
+    <div class="footer">
+      <a href="/setup">Wi-Fi Setup</a> | 
+      <a href="/ota">OTA Info</a>
+    </div>
   </div>
-
-  <div class="pad">
-    <div class="empty"></div>
-    <button data-cmd="fwd">&#9650;</button>
-    <div class="empty"></div>
-    <button data-cmd="left">&#9664;</button>
-    <button class="stop" data-cmd="stop">STOP</button>
-    <button data-cmd="right">&#9654;</button>
-    <div class="empty"></div>
-    <button data-cmd="bwd">&#9660;</button>
-    <div class="empty"></div>
-  </div>
-
-  <div class="tests">
-    <button class="t-all" onclick="runTest('test')">Run All Tests</button>
-    <button class="t4" onclick="runTest('test4')">Test 4: Motor Check</button>
-    <button class="t1" onclick="runTest('test1')">Test 1: Individual Spin</button>
-    <button class="t2" onclick="runTest('test2')">Test 2: Directions</button>
-    <button class="t3" onclick="runTest('test3')">Test 3: Speed Sweep</button>
-    <button class="t5" onclick="runTest('test5')">Test 5: Figure-8</button>
-  </div>
-
-  <div class="status" id="st"></div>
-
+  
   <script>
-    var st=document.getElementById('st');
-    var slider=document.getElementById('spd');
-    var svEl=document.getElementById('sv');
-    var rpmEl=document.getElementById('rpm');
-    var pressed={};
-    var lastCmd='';
-
-    slider.addEventListener('input',function(){
-      svEl.textContent=slider.value;
-      rpmEl.textContent=Math.round(slider.value*300/255);
-    });
-
-    function send(cmd){
-      if(cmd===lastCmd) return;
-      lastCmd=cmd;
-      fetch('/cmd?cmd='+cmd+'&speed='+slider.value);
+    let currentSpeed = 180;
+    let lastCmd = 'stop';
+    
+    function log(msg) {
+      const logEl = document.getElementById('log');
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      entry.textContent = '> ' + msg;
+      logEl.appendChild(entry);
+      logEl.scrollTop = logEl.scrollHeight;
+      if (logEl.children.length > 20) logEl.removeChild(logEl.firstChild);
     }
-
-    function update(){
-      var f=pressed.fwd||false;
-      var b=pressed.bwd||false;
-      var l=pressed.left||false;
-      var r=pressed.right||false;
-
-      if(f&&l)      send('cl');
-      else if(f&&r) send('cr');
-      else if(b&&l) send('bkl');
-      else if(b&&r) send('bkr');
-      else if(f)    send('fwd');
-      else if(b)    send('bwd');
-      else if(l)    send('left');
-      else if(r)    send('right');
-      else          send('stop');
+    
+    function updateStatus() {
+      fetch('/wifi/status').then(r => r.json()).then(data => {
+        // Wi-Fi Status
+        const wifiEl = document.getElementById('wifiStatus');
+        const wifiDot = document.getElementById('wifiDot');
+        const wifiText = document.getElementById('wifiText');
+        
+        if (data.sta_connected) {
+          wifiEl.className = 'status-badge wifi-connected';
+          wifiDot.className = 'status-dot dot-green';
+          wifiText.textContent = data.sta_ssid;
+          document.getElementById('ssidVal').textContent = data.sta_ssid;
+          document.getElementById('ipVal').textContent = data.sta_ip;
+        } else {
+          wifiEl.className = 'status-badge wifi-disconnected';
+          wifiDot.className = 'status-dot dot-red';
+          wifiText.textContent = 'No Wi-Fi';
+          document.getElementById('ssidVal').textContent = 'Not connected';
+          document.getElementById('ipVal').textContent = '-';
+        }
+        
+        // MQTT Status
+        const mqttEl = document.getElementById('mqttStatus');
+        const mqttDot = document.getElementById('mqttDot');
+        const mqttText = document.getElementById('mqttText');
+        
+        if (data.mqtt_connected) {
+          mqttEl.className = 'status-badge mqtt-connected';
+          mqttDot.className = 'status-dot dot-green';
+          mqttText.textContent = 'MQTT';
+        } else {
+          mqttEl.className = 'status-badge mqtt-disconnected';
+          mqttDot.className = 'status-dot dot-red';
+          mqttText.textContent = 'No MQTT';
+        }
+      }).catch(() => {});
     }
-
-    document.querySelectorAll('.pad button[data-cmd]').forEach(function(b){
-      var cmd=b.dataset.cmd;
-      if(cmd==='stop'){
-        b.addEventListener('touchstart',function(e){e.preventDefault();pressed={};update();});
-        b.addEventListener('mousedown',function(){pressed={};update();});
-        return;
-      }
-      b.addEventListener('touchstart',function(e){e.preventDefault();pressed[cmd]=true;update();});
-      b.addEventListener('touchend',function(e){e.preventDefault();delete pressed[cmd];update();});
-      b.addEventListener('touchcancel',function(e){e.preventDefault();delete pressed[cmd];update();});
-      b.addEventListener('mousedown',function(){pressed[cmd]=true;update();});
-      b.addEventListener('mouseup',function(){delete pressed[cmd];update();});
-      b.addEventListener('mouseleave',function(){delete pressed[cmd];update();});
-    });
-
-    function runTest(t){
-      var btns=document.querySelectorAll('.tests button');
-      btns.forEach(function(b){b.disabled=true;});
-      st.textContent='Running '+t+'...';
-      fetch('/cmd?cmd='+t).then(function(r){return r.text();}).then(function(txt){
-        st.textContent=t+': '+txt;
-        btns.forEach(function(b){b.disabled=false;});
-      }).catch(function(){
-        st.textContent=t+' failed';
-        btns.forEach(function(b){b.disabled=false;});
+    
+    function updateSpeed(val) {
+      currentSpeed = parseInt(val);
+      document.getElementById('speedVal').textContent = val;
+      fetch('/cmd?cmd=speed:' + val).then(() => {});
+    }
+    
+    function sendCmd(cmd) {
+      lastCmd = cmd;
+      fetch('/cmd?cmd=' + cmd).then(r => r.text()).then(t => {
+        log(cmd + ' - ' + t);
       });
     }
+    
+    function sendCustom() {
+      const input = document.getElementById('cmdInput');
+      const cmd = input.value.trim();
+      if (!cmd) return;
+      sendCmd(cmd);
+      input.value = '';
+    }
+    
+    // Initial
+    updateStatus();
+    setInterval(updateStatus, 5000);
+    log('Ready');
   </script>
 </body>
 </html>
-)raw";
+)rawliteral";
 
 #endif

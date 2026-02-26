@@ -1,259 +1,146 @@
 /*
- * Woffy 2.0 — L293D 4WD + Wi-Fi + Full Test Suite
- * Pins & speed match AKASH's working ESP-IDF code exactly
+ * Woffy 2.0 — MQTT Only (Robust)
  */
 
 #include <WiFi.h>
-#include <WebServer.h>
+#include <PubSubClient.h>
 #include "config.h"
 #include "motors.h"
-#include "html.h"
 
-WebServer server(80);
+bool mqttConnected = false;
+bool wifiConnected = false;
+String lastCommand = "";
 
-void setupWiFi() {
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(WOFFY_SSID, WOFFY_PASS);
-  Serial.print("Woffy AP: ");
-  Serial.println(WiFi.softAPIP());
+// ===== LED =====
+#define LED_PIN 2
+
+void setLED(bool on) {
+  digitalWrite(LED_PIN, on ? HIGH : LOW);
 }
 
-void handleRoot() {
-  server.send_P(200, "text/html", CONTROL_HTML);
+void updateLED() {
+  if (wifiConnected && mqttConnected) {
+    setLED(true); // Solid = all good
+  } else {
+    setLED(millis() % 1000 < 500); // Blink = not working
+  }
 }
 
-void handleCommand() {
-  if (!server.hasArg("cmd")) { server.send(400, "text/plain", "Missing cmd"); return; }
-  String cmd = server.arg("cmd");
-  int speed = server.hasArg("speed") ? server.arg("speed").toInt() : DEFAULT_SPEED;
+// ===== MQTT =====
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
 
-  int slow = speed / 3;
-
-  if (cmd == "fwd")        moveForward(speed);
-  else if (cmd == "bwd")   moveBackward(speed);
-  else if (cmd == "left")  turnLeft(speed);
-  else if (cmd == "right") turnRight(speed);
-  else if (cmd == "stop")  stopAll();
-  // Curves: fwd + left/right
-  else if (cmd == "cl") {
-    motorFwd(FL1, FL2, slow); motorFwd(RL1, RL2, slow);
-    motorFwd(FR1, FR2, speed); motorFwd(RR1, RR2, speed);
-  }
-  else if (cmd == "cr") {
-    motorFwd(FL1, FL2, speed); motorFwd(RL1, RL2, speed);
-    motorFwd(FR1, FR2, slow); motorFwd(RR1, RR2, slow);
-  }
-  // Reverse curves: bwd + left/right
-  else if (cmd == "bkl") {
-    motorRev(FL1, FL2, slow); motorRev(RL1, RL2, slow);
-    motorRev(FR1, FR2, speed); motorRev(RR1, RR2, speed);
-  }
-  else if (cmd == "bkr") {
-    motorRev(FL1, FL2, speed); motorRev(RL1, RL2, speed);
-    motorRev(FR1, FR2, slow); motorRev(RR1, RR2, slow);
-  }
-  else if (cmd == "test") {
-    server.send(200, "text/plain", "Running all tests...");
-    test4_allMotors(DEFAULT_SPEED); delay(2000);
-    test1_individual(DEFAULT_SPEED); delay(2000);
-    test2_directions(DEFAULT_SPEED); delay(2000);
-    test3_speedSweep(); delay(2000);
-    test5_figure8(DEFAULT_SPEED);
-    return;
-  }
-  else if (cmd == "test1") { server.send(200, "text/plain", "Running..."); test1_individual(DEFAULT_SPEED); return; }
-  else if (cmd == "test2") { server.send(200, "text/plain", "Running..."); test2_directions(DEFAULT_SPEED); return; }
-  else if (cmd == "test3") { server.send(200, "text/plain", "Running..."); test3_speedSweep(); return; }
-  else if (cmd == "test4") { server.send(200, "text/plain", "Running..."); test4_allMotors(DEFAULT_SPEED); return; }
-  else if (cmd == "test5") { server.send(200, "text/plain", "Running..."); test5_figure8(DEFAULT_SPEED); return; }
-  else { server.send(400, "text/plain", "Unknown"); return; }
-
-  server.send(200, "text/plain", "OK");
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  payload[length] = '\0';
+  String cmd = String((char*)payload);
+  cmd.trim();
+  Serial.print("MQTT RX: ");
+  Serial.println(cmd);
+  Serial.println("--------------------");
+  executeCommand(cmd);
 }
 
-/* ====================================================
- *  TEST 1: Individual Motor Spin (FWD + REV each)
- *  Check: each motor spins, correct direction
- * ==================================================== */
-void test1_individual(int speed) {
-  Serial.println();
-  Serial.println("========================================");
-  Serial.println("  TEST 1: INDIVIDUAL MOTOR SPIN");
-  Serial.printf("  Speed: PWM %d\n", speed);
-  Serial.println("========================================");
+bool connectMQTT() {
+  if (!MQTT_ENABLED) return false;
 
-  const char* names[] = {"FRONT-LEFT (25/26)", "FRONT-RIGHT (27/14)",
-                         "REAR-LEFT (18/19)",  "REAR-RIGHT (21/22)"};
-  int pins1[] = {FL1, FR1, RL1, RR1};
-  int pins2[] = {FL2, FR2, RL2, RR2};
+  Serial.print("MQTT: ");
+  Serial.println(MQTT_BROKER);
 
-  for (int i = 0; i < 4; i++) {
-    Serial.printf("\n--- %s: FORWARD ---\n", names[i]);
-    motorFwd(pins1[i], pins2[i], speed);
-    delay(1500);
-    motorBrake(pins1[i], pins2[i]);
-    delay(800);
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
 
-    Serial.printf("--- %s: REVERSE ---\n", names[i]);
-    motorRev(pins1[i], pins2[i], speed);
-    delay(1500);
-    motorBrake(pins1[i], pins2[i]);
-    delay(800);
+  String clientId = String(MQTT_CLIENT_ID) + "_" + String(random(1000, 9999));
+
+  if (mqttClient.connect(clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD)) {
+    Serial.println("MQTT: Connected");
+    mqttClient.subscribe(MQTT_TOPIC_CMD);
+    return true;
   }
-  Serial.println("\n>> Test 1 COMPLETE");
+  Serial.print("MQTT: Failed ");
+  Serial.println(mqttClient.state());
+  return false;
 }
 
-/* ====================================================
- *  TEST 2: Direction Verification
- *  All motors: forward, backward, spin left, spin right
- * ==================================================== */
-void test2_directions(int speed) {
-  Serial.println();
-  Serial.println("========================================");
-  Serial.println("  TEST 2: DIRECTION VERIFICATION");
-  Serial.printf("  Speed: PWM %d\n", speed);
-  Serial.println("========================================");
-
-  Serial.println("\n>> ALL FORWARD — robot should move forward");
-  moveForward(speed);
-  delay(2000);
-  stopAll();
-  delay(1000);
-
-  Serial.println(">> ALL BACKWARD — robot should move backward");
-  moveBackward(speed);
-  delay(2000);
-  stopAll();
-  delay(1000);
-
-  Serial.println(">> SPIN LEFT — robot should rotate left");
-  turnLeft(speed);
-  delay(1500);
-  stopAll();
-  delay(1000);
-
-  Serial.println(">> SPIN RIGHT — robot should rotate right");
-  turnRight(speed);
-  delay(1500);
-  stopAll();
-
-  Serial.println("\n>> Test 2 COMPLETE");
+void setupMQTT() {
+  if (!MQTT_ENABLED) return;
+  mqttConnected = connectMQTT();
 }
 
-/* ====================================================
- *  TEST 3: Speed Sweep (Slip Detection)
- *  PWM 60 → 200, watch where wheels start slipping
- * ==================================================== */
-void test3_speedSweep() {
-  Serial.println();
-  Serial.println("========================================");
-  Serial.println("  TEST 3: SPEED SWEEP (SLIP DETECTION)");
-  Serial.println("  WATCH wheels — note when they slip!");
-  Serial.println("========================================");
+void mqttReconnect() {
+  if (!MQTT_ENABLED) return;
+  if (!mqttClient.connected()) {
+    mqttConnected = connectMQTT();
+  }
+}
 
-  int speeds[] = {60, 80, 100, 120, 140, 160, 180, 200};
+void publishStatus(const String& status) {
+  if (mqttConnected) {
+    mqttClient.publish(MQTT_TOPIC_STATUS, status.c_str());
+  }
+}
 
-  for (int i = 0; i < 8; i++) {
-    int rpm = speeds[i] * 300 / 255;
-    Serial.printf("\n>> PWM %3d | %2d%% | ~%d RPM\n", speeds[i], speeds[i]*100/255, rpm);
-    moveForward(speeds[i]);
+// ===== Commands =====
+int currentSpeed = DEFAULT_SPEED;
+
+void executeCommand(const String& cmd) {
+  lastCommand = cmd;
+
+  if (cmd == "demo" || cmd == "sequence") {
+    Serial.println("Demo: 2s fwd, wait, 5s fwd");
+    moveForward(currentSpeed);
     delay(2000);
     stopAll();
-    delay(1500);
+    delay(1000);
+    moveForward(currentSpeed);
+    delay(5000);
+    stopAll();
+    publishStatus("DemoDone");
+    return;
   }
 
-  Serial.println("\n>> Test 3 COMPLETE");
-  Serial.println(">> Note the highest PWM without slip = safe max");
-}
-
-/* ====================================================
- *  TEST 4: All Motors Together (from working code)
- *  Same sequence as AKASH's original test
- * ==================================================== */
-void test4_allMotors(int speed) {
-  Serial.println();
-  Serial.println("========================================");
-  Serial.println("  TEST 4: ALL MOTORS (AKASH SEQUENCE)");
-  Serial.printf("  Speed: PWM %d\n", speed);
-  Serial.println("========================================");
-
-  Serial.println("\n1. Front Left...");
-  motorFwd(FL1, FL2, speed);
-  delay(1500);
-  motorBrake(FL1, FL2);
-  delay(800);
-
-  Serial.println("2. Front Right...");
-  motorFwd(FR1, FR2, speed);
-  delay(1500);
-  motorBrake(FR1, FR2);
-  delay(800);
-
-  Serial.println("3. Rear Left...");
-  motorFwd(RL1, RL2, speed);
-  delay(1500);
-  motorBrake(RL1, RL2);
-  delay(800);
-
-  Serial.println("4. Rear Right...");
-  motorFwd(RR1, RR2, speed);
-  delay(1500);
-  motorBrake(RR1, RR2);
-  delay(800);
-
-  Serial.println("5. ALL Forward...");
-  moveForward(speed);
-  delay(3000);
-
-  Serial.println("6. STOP ALL");
-  stopAll();
-
-  Serial.println("\n>> Test 4 COMPLETE");
-}
-
-/* ====================================================
- *  TEST 5: Figure-8 Pattern
- *  Forward → right curve → forward → left curve
- * ==================================================== */
-void test5_figure8(int speed) {
-  Serial.println();
-  Serial.println("========================================");
-  Serial.println("  TEST 5: FIGURE-8 MOVEMENT");
-  Serial.println("========================================");
-
-  int slow = speed / 2;
-
-  for (int lap = 1; lap <= 2; lap++) {
-    Serial.printf("\n>> Lap %d/2\n", lap);
-
-    Serial.println("  Straight...");
-    moveForward(speed);
-    delay(1500);
-
-    Serial.println("  Curve right...");
-    motorFwd(FL1, FL2, speed);
-    motorFwd(RL1, RL2, speed);
-    motorFwd(FR1, FR2, slow);
-    motorFwd(RR1, RR2, slow);
-    delay(2000);
-
-    Serial.println("  Straight...");
-    moveForward(speed);
-    delay(1500);
-
-    Serial.println("  Curve left...");
-    motorFwd(FL1, FL2, slow);
-    motorFwd(RL1, RL2, slow);
-    motorFwd(FR1, FR2, speed);
-    motorFwd(RR1, RR2, speed);
-    delay(2000);
+  if (cmd.startsWith("speed:")) {
+    currentSpeed = cmd.substring(6).toInt();
+    if (currentSpeed < 60) currentSpeed = 60;
+    if (currentSpeed > 255) currentSpeed = 255;
+    Serial.print("Speed: ");
+    Serial.println(currentSpeed);
+    publishStatus("Speed:" + String(currentSpeed));
+    return;
   }
 
-  stopAll();
-  Serial.println("\n>> Test 5 COMPLETE");
+  if (cmd == "fwd" || cmd == "forward" || cmd == "w") {
+    moveForward(currentSpeed);
+    publishStatus("Forward");
+  }
+  else if (cmd == "bwd" || cmd == "backward" || cmd == "s") {
+    moveBackward(currentSpeed);
+    publishStatus("Backward");
+  }
+  else if (cmd == "left" || cmd == "a") {
+    turnLeft(currentSpeed);
+    publishStatus("Left");
+  }
+  else if (cmd == "right" || cmd == "d") {
+    turnRight(currentSpeed);
+    publishStatus("Right");
+  }
+  else if (cmd == "stop" || cmd == "x" || cmd == " ") {
+    stopAll();
+    publishStatus("Stopped");
+  }
+  else if (cmd == "status") {
+    String status = "IP:" + WiFi.localIP().toString() +
+                    "|WiFi:" + String(wifiConnected ? "1" : "0") +
+                    "|MQTT:" + String(mqttConnected ? "1" : "0");
+    publishStatus(status);
+  }
+  else {
+    Serial.print("Unknown: ");
+    Serial.println(cmd);
+  }
 }
 
-// ===== Serial Command Handler =====
+// ===== Serial =====
 void handleSerial() {
   if (!Serial.available()) return;
   String cmd = Serial.readStringUntil('\n');
@@ -263,64 +150,93 @@ void handleSerial() {
   Serial.print("> ");
   Serial.println(cmd);
 
-  if      (cmd == "fwd")   { Serial.println("Forward");  moveForward(DEFAULT_SPEED); }
-  else if (cmd == "bwd")   { Serial.println("Backward"); moveBackward(DEFAULT_SPEED); }
-  else if (cmd == "left")  { Serial.println("Left");     turnLeft(DEFAULT_SPEED); }
-  else if (cmd == "right") { Serial.println("Right");    turnRight(DEFAULT_SPEED); }
-  else if (cmd == "stop")  { Serial.println("Stop");     stopAll(); }
-  else if (cmd == "test") {
-    Serial.println("=== RUNNING ALL TESTS ===");
-    test4_allMotors(DEFAULT_SPEED);
-    delay(2000);
-    test1_individual(DEFAULT_SPEED);
-    delay(2000);
-    test2_directions(DEFAULT_SPEED);
-    delay(2000);
-    test3_speedSweep();
-    delay(2000);
-    test5_figure8(DEFAULT_SPEED);
-    Serial.println();
-    Serial.println("========================================");
-    Serial.println("  ALL 5 TESTS COMPLETE!");
-    Serial.println("========================================");
-  }
-  else if (cmd == "test1") { test1_individual(DEFAULT_SPEED); }
-  else if (cmd == "test2") { test2_directions(DEFAULT_SPEED); }
-  else if (cmd == "test3") { test3_speedSweep(); }
-  else if (cmd == "test4") { test4_allMotors(DEFAULT_SPEED); }
-  else if (cmd == "test5") { test5_figure8(DEFAULT_SPEED); }
-  else {
-    Serial.println("Commands:");
-    Serial.println("  fwd bwd left right stop");
-    Serial.println("  test  — run all 5 tests");
-    Serial.println("  test1 — individual motor spin (fwd+rev)");
-    Serial.println("  test2 — direction verification");
-    Serial.println("  test3 — speed sweep (slip detection)");
-    Serial.println("  test4 — AKASH original sequence");
-    Serial.println("  test5 — figure-8 pattern");
-  }
+  executeCommand(cmd);
 }
 
+// ===== Setup =====
 void setup() {
   Serial.begin(115200);
+  delay(500); // Wait for serial
+
   Serial.println();
-  Serial.println("############################################");
-  Serial.println("#  WOFFY 2.0 — L293D Full Test Suite       #");
-  Serial.printf( "#  Default speed: PWM %d (~210 RPM)       #\n", DEFAULT_SPEED);
-  Serial.println("############################################");
+  Serial.println("========================");
+  Serial.println("WOFFY 2.0 - MQTT ROBUST");
+  Serial.println("========================");
+  Serial.println("Changelog v2:");
+  Serial.println("  - Smooth motor ramping (no instant reversals)");
+  Serial.println("  - Fixed LED polarity (HIGH=on)");
+  Serial.println("  - Fixed front motor direction (FL/FR swapped)");
+  Serial.println("  - Fixed stale MQTT state detection");
+  Serial.println("  - Serial uses shared executeCommand");
+  Serial.println("========================");
+
+  pinMode(LED_PIN, OUTPUT);
+  setLED(false);
 
   setupMotors();
-  setupWiFi();
 
-  server.on("/", handleRoot);
-  server.on("/cmd", HTTP_GET, handleCommand);
-  server.begin();
+  // Connect to WiFi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WOFFY_SSID, WOFFY_PASS);
 
-  Serial.println("WiFi: " + String(WOFFY_SSID) + " -> http://" + WiFi.softAPIP().toString());
-  Serial.println("Serial: fwd bwd left right stop test test1-5");
+  Serial.print("WiFi: ");
+  Serial.println(WOFFY_SSID);
+
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT) {
+    delay(300);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.print("WiFi: OK ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("WiFi: FAILED!");
+  }
+
+  setupMQTT();
+
+  Serial.println();
+  Serial.println("========== READY ==========");
 }
 
+unsigned long lastWifiPub = 0;
+unsigned long lastReconnect = 0;
+
 void loop() {
-  server.handleClient();
   handleSerial();
+  updateMotors();
+  updateLED();
+
+  if (MQTT_ENABLED) {
+    // Sync flag with actual connection state
+    if (mqttConnected && !mqttClient.connected()) {
+      mqttConnected = false;
+      Serial.println("MQTT: Connection lost");
+    }
+
+    if (mqttConnected) {
+      mqttClient.loop();
+
+      // Publish status every 30s
+      if (millis() - lastWifiPub > 30000) {
+        String info = "IP:" + WiFi.localIP().toString() +
+                     "|RSSI:" + String(WiFi.RSSI());
+        mqttClient.publish(MQTT_TOPIC_STATUS, info.c_str());
+        lastWifiPub = millis();
+      }
+    } else {
+      // Try reconnect every 5 seconds
+      if (millis() - lastReconnect > 5000) {
+        lastReconnect = millis();
+        mqttReconnect();
+        if (mqttConnected) {
+          Serial.println("MQTT: Reconnected!");
+        }
+      }
+    }
+  }
 }

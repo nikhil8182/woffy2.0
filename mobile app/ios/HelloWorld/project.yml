@@ -1,0 +1,36 @@
+name: HelloWorld
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "15.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: false
+
+targets:
+  HelloWorld:
+    type: application
+    platform: iOS
+    sources:
+      - path: AppDelegate.swift
+      - path: SceneDelegate.swift
+      - path: ViewController.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.HelloWorld
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+
+schemes:
+  HelloWorld:
+    build:
+      targets:
+        HelloWorld: all
+    run:
+      config: Debug
+    archive:
+      config: Release

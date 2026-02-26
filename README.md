@@ -126,6 +126,37 @@ GPIO 22 ──────────── IN4 (B2) ┘
 4. **Multi-touch:** hold forward + tap left/right to curve
 5. **Speed slider:** drag to adjust PWM (60–255)
 6. **Test buttons:** tap to run motor tests
+7. **Wi-Fi Setup:** click "Wi-Fi Setup" link to connect to your home Wi-Fi
+
+---
+
+## Wi-Fi Provisioning
+
+Woffy can connect to your home Wi-Fi while still hosting its own AP for control.
+
+### First Time Setup
+
+1. Connect phone to **Woffy2** AP (password: `woffy1234`)
+2. Open **http://192.168.4.1**
+3. Click **Wi-Fi Setup** at the bottom
+4. Tap **Scan Wi-Fi Networks**
+5. Select your network, enter password, tap **Connect**
+6. Woffy saves credentials to EEPROM and connects!
+
+### How It Works
+
+- **First boot:** Starts in AP mode only
+- **After provisioning:** Tries to connect to saved Wi-Fi first
+  - If connected: Runs in STA+AP mode (you can control from both IPs)
+  - If fails: Falls back to AP-only mode
+- **Credentials stored** in ESP32 EEPROM (persist across restarts)
+- **Forget Wi-Fi:** Use the "Forget Saved Wi-Fi" button to clear
+
+### Dual IP Access
+
+After connecting to home Wi-Fi:
+- **http://192.168.4.1** — AP mode (always available)
+- **http://<local-ip>** — STA mode (your home network)
 
 ---
 
@@ -140,6 +171,8 @@ Open serial monitor at 115200 baud:
 | `left`  | Spin left |
 | `right` | Spin right |
 | `stop`  | Stop all |
+| `wifi`  | Show Wi-Fi status (STA + AP) |
+| `scan`   | Scan for available Wi-Fi networks |
 | `test`  | Run all 5 tests |
 | `test1` | Individual motor spin (fwd + rev) |
 | `test2` | Direction verification |

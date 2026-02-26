@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""
+Woffy Serial Monitor
+Auto-detects ESP32, interactive commands, auto-reconnect.
+
+Usage:
+    ./sm              # auto-detect port
+    ./sm /dev/cu...   # use specific port
+    ./sm --send fwd   # send command and show output for 2s
+"""
+
+import serial
+import serial.tools.list_ports
+import sys
+import os
+import time
+import glob
+import threading
+import signal
+
+BAUD = 115200
+PORT_PATTERNS = [
+    '/dev/cu.usbserial-*',
+    '/dev/cu.wchusbserial-*',
+    '/dev/cu.SLAB_USBtoUART*',
+    '/dev/cu.usbmodem-*',
+]
+
+
+def find_port():
+    """Auto-detect ESP32 serial port."""
+    for pattern in PORT_PATTERNS:
+        for port in sorted(glob.glob(pattern)):
+            return port
+    return None
+
+
+def free_port(port):
+    """Kill any process holding the port."""
+    pids = os.popen(f'lsof -t {port} 2>/dev/null').read().strip()
+    if pids:
+        for pid in pids.split('\n'):
+            try:
+                os.kill(int(pid), 9)
+            except (ValueError, ProcessLookupError):
+                pass
+        time.sleep(0.5)
+
+
+def read_loop(ser):
+    """Read and print serial output."""
+    while ser.is_open:
+        try:
+            if ser.in_waiting:
+                line = ser.readline().decode('utf-8', errors='replace').strip()
+                if line:
+                    print(line)
+            else:
+                time.sleep(0.01)
+        except (serial.SerialException, OSError):
+            print("\n--- Device disconnected ---")
+            return False
+    return False
+
+
+def interactive(ser):
+    """Read commands from stdin and send to ESP32."""
+    while ser.is_open:
+        try:
+            cmd = input()
+            if cmd.strip():
+                ser.write((cmd.strip() + '\n').encode())
+        except EOFError:
+            break
+        except (serial.SerialException, OSError):
+            break
+
+
+def send_and_exit(port, command, duration=2):
+    """Send a single command, show output for a few seconds, then exit."""
+    free_port(port)
+    try:
+        ser = serial.Serial(port, BAUD, timeout=0.5)
+        time.sleep(0.5)
+        ser.write((command + '\n').encode())
+        end = time.time() + duration
+        while time.time() < end:
+            if ser.in_waiting:
+                line = ser.readline().decode('utf-8', errors='replace').strip()
+                if line:
+                    print(line)
+            time.sleep(0.01)
+        ser.close()
+    except serial.SerialException as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+def monitor(port):
+    """Main monitor loop with auto-reconnect."""
+    free_port(port)
+
+    print(f"=== Woffy Serial Monitor ===")
+    print(f"Port: {port}  Baud: {BAUD}")
+    print(f"Type commands below. Ctrl+C to exit.")
+    print()
+
+    while True:
+        try:
+            ser = serial.Serial(port, BAUD, timeout=0.5)
+            time.sleep(1)  # wait for ESP32 reset
+
+            # Start input thread for interactive commands
+            input_thread = threading.Thread(target=interactive, args=(ser,), daemon=True)
+            input_thread.start()
+
+            connected = read_loop(ser)
+
+            try:
+                ser.close()
+            except Exception:
+                pass
+
+            if not connected:
+                print("Reconnecting in 2s...")
+                time.sleep(2)
+                if not os.path.exists(port):
+                    print(f"Port {port} gone. Waiting for device...")
+                    while not os.path.exists(port):
+                        time.sleep(1)
+                    print(f"Port {port} back!")
+                    time.sleep(1)
+
+        except serial.SerialException:
+            time.sleep(2)
+            if not os.path.exists(port):
+                while not os.path.exists(port):
+                    time.sleep(1)
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n--- Monitor closed ---")
+            try:
+                ser.close()
+            except Exception:
+                pass
+            sys.exit(0)
+
+
+def main():
+    # Parse args
+    args = sys.argv[1:]
+
+    # --send mode: send a command and exit
+    if '--send' in args:
+        idx = args.index('--send')
+        command = args[idx + 1] if idx + 1 < len(args) else 'status'
+        port = next((a for a in args if a.startswith('/dev/')), None) or find_port()
+        if not port:
+            print("ERROR: No ESP32 found.")
+            sys.exit(1)
+        send_and_exit(port, command)
+        return
+
+    # Regular monitor mode
+    port = next((a for a in args if a.startswith('/dev/')), None) or find_port()
+    if not port:
+        print("ERROR: No ESP32 found. Check USB cable.")
+        print(f"Searched: {', '.join(PORT_PATTERNS)}")
+        sys.exit(1)
+
+    monitor(port)
+
+
+if __name__ == '__main__':
+    main()
