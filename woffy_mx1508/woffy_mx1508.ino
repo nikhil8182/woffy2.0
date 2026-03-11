@@ -1,29 +1,85 @@
 /*
- * Woffy 2.0 — MQTT Only (Robust)
+ * Woffy 2.0 — Performance Edition
+ * MQTT + HTTP fast path + Servo + Ultrasonic
  */
 
 #include <WiFi.h>
+#include <WebServer.h>
 #include <PubSubClient.h>
+#include <esp_task_wdt.h>
 #include "config.h"
 #include "motors.h"
+#include "html.h"
 
 bool mqttConnected = false;
 bool wifiConnected = false;
 String lastCommand = "";
+int currentSpeed = DEFAULT_SPEED;
 
-// ===== LED =====
-#define LED_PIN 2
+// ===== HTTP Server (fast path) =====
+WebServer server(80);
 
-void setLED(bool on) {
-  digitalWrite(LED_PIN, on ? HIGH : LOW);
+void handleRoot() {
+  server.send_P(200, "text/html", CONTROL_HTML);
 }
 
-void updateLED() {
-  if (wifiConnected && mqttConnected) {
-    setLED(true); // Solid = all good
+void handleCmd() {
+  String cmd = server.arg("cmd");
+  if (cmd.length() > 0) {
+    Serial.print("HTTP RX: ");
+    Serial.println(cmd);
+    executeCommand(cmd);
+    server.send(200, "text/plain", "OK:" + cmd);
   } else {
-    setLED(millis() % 1000 < 500); // Blink = not working
+    server.send(400, "text/plain", "No cmd");
   }
+}
+
+void handleWifiStatus() {
+  String json = "{";
+  json += "\"sta_connected\":" + String(wifiConnected ? "true" : "false");
+  json += ",\"sta_ssid\":\"" + String(WOFFY_SSID) + "\"";
+  json += ",\"sta_ip\":\"" + WiFi.localIP().toString() + "\"";
+  json += ",\"mqtt_connected\":" + String(mqttConnected ? "true" : "false");
+  json += ",\"rssi\":" + String(WiFi.RSSI());
+  json += ",\"uptime\":" + String(millis() / 1000);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleStatus() {
+  float dist = getDistance();
+  String json = "{";
+  json += "\"ip\":\"" + WiFi.localIP().toString() + "\"";
+  json += ",\"wifi\":" + String(wifiConnected ? "true" : "false");
+  json += ",\"mqtt\":" + String(mqttConnected ? "true" : "false");
+  json += ",\"speed\":" + String(currentSpeed);
+  json += ",\"servo\":" + String(servoAngle);
+  json += ",\"distance\":" + String(dist, 1);
+  json += ",\"rssi\":" + String(WiFi.RSSI());
+  json += ",\"uptime\":" + String(millis() / 1000);
+  json += ",\"last_cmd\":\"" + lastCommand + "\"";
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleRadarPoint() {
+  // Single radar reading at current servo angle
+  float dist = getDistance();
+  if (dist <= 0 || dist > 200) dist = 200;
+  String json = "{\"angle\":" + String(servoAngle) + ",\"distance\":" + String(dist, 1) + "}";
+  server.send(200, "application/json", json);
+}
+
+void setupHTTPServer() {
+  server.on("/", handleRoot);
+  server.on("/cmd", handleCmd);
+  server.on("/wifi/status", handleWifiStatus);
+  server.on("/status", handleStatus);
+  server.on("/radar", handleRadarPoint);
+  server.begin();
+  Serial.print("HTTP: http://");
+  Serial.println(WiFi.localIP());
 }
 
 // ===== MQTT =====
@@ -36,7 +92,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   cmd.trim();
   Serial.print("MQTT RX: ");
   Serial.println(cmd);
-  Serial.println("--------------------");
   executeCommand(cmd);
 }
 
@@ -48,12 +103,14 @@ bool connectMQTT() {
 
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
+  mqttClient.setKeepAlive(10);        // 10s keepalive (faster disconnect detection)
+  mqttClient.setSocketTimeout(3);     // 3s socket timeout
 
   String clientId = String(MQTT_CLIENT_ID) + "_" + String(random(1000, 9999));
 
   if (mqttClient.connect(clientId.c_str(), MQTT_USERNAME, MQTT_PASSWORD)) {
     Serial.println("MQTT: Connected");
-    mqttClient.subscribe(MQTT_TOPIC_CMD);
+    mqttClient.subscribe(MQTT_TOPIC_CMD, 0);  // QoS 0 — fire and forget
     return true;
   }
   Serial.print("MQTT: Failed ");
@@ -79,22 +136,74 @@ void publishStatus(const String& status) {
   }
 }
 
-// ===== Commands =====
-int currentSpeed = DEFAULT_SPEED;
+// ===== Radar publisher =====
+void radarPublish(int angle, float distance) {
+  // angle=-1 means sweep complete
+  if (angle < 0) {
+    publishStatus("RadarDone");
+    Serial.println("Radar: done");
+    return;
+  }
+  // Format: "R:angle:distance" — compact for fast streaming
+  String msg = "R:" + String(angle) + ":" + String(distance, 1);
+  publishStatus(msg);
+  Serial.print("R:");
+  Serial.print(angle);
+  Serial.print(":");
+  Serial.println(distance, 1);
+}
 
+// ===== Non-blocking Demo =====
+enum DemoState { DEMO_IDLE, DEMO_FWD1, DEMO_PAUSE, DEMO_FWD2 };
+DemoState demoState = DEMO_IDLE;
+unsigned long demoStart = 0;
+
+void startDemo() {
+  demoState = DEMO_FWD1;
+  demoStart = millis();
+  moveForward(currentSpeed);
+  Serial.println("Demo: started");
+}
+
+void updateDemo() {
+  if (demoState == DEMO_IDLE) return;
+
+  unsigned long elapsed = millis() - demoStart;
+
+  switch (demoState) {
+    case DEMO_FWD1:
+      if (elapsed >= 2000) {
+        stopAll();
+        demoState = DEMO_PAUSE;
+        demoStart = millis();
+      }
+      break;
+    case DEMO_PAUSE:
+      if (elapsed >= 1000) {
+        moveForward(currentSpeed);
+        demoState = DEMO_FWD2;
+        demoStart = millis();
+      }
+      break;
+    case DEMO_FWD2:
+      if (elapsed >= 5000) {
+        stopAll();
+        demoState = DEMO_IDLE;
+        publishStatus("DemoDone");
+        Serial.println("Demo: done");
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// ===== Commands =====
 void executeCommand(const String& cmd) {
   lastCommand = cmd;
 
   if (cmd == "demo" || cmd == "sequence") {
-    Serial.println("Demo: 2s fwd, wait, 5s fwd");
-    moveForward(currentSpeed);
-    delay(2000);
-    stopAll();
-    delay(1000);
-    moveForward(currentSpeed);
-    delay(5000);
-    stopAll();
-    publishStatus("DemoDone");
+    startDemo();
     return;
   }
 
@@ -126,13 +235,60 @@ void executeCommand(const String& cmd) {
   }
   else if (cmd == "stop" || cmd == "x" || cmd == " ") {
     stopAll();
+    demoState = DEMO_IDLE;  // cancel demo if running
     publishStatus("Stopped");
   }
   else if (cmd == "status") {
+    float dist = getDistance();
     String status = "IP:" + WiFi.localIP().toString() +
                     "|WiFi:" + String(wifiConnected ? "1" : "0") +
-                    "|MQTT:" + String(mqttConnected ? "1" : "0");
+                    "|MQTT:" + String(mqttConnected ? "1" : "0") +
+                    "|Dist:" + String(dist, 1) + "cm" +
+                    "|Servo:" + String(servoAngle);
     publishStatus(status);
+  }
+  // Servo commands
+  else if (cmd.startsWith("servo:")) {
+    int angle = cmd.substring(6).toInt();
+    setServo(angle);
+    Serial.print("Servo: ");
+    Serial.println(angle);
+    publishStatus("Servo:" + String(angle));
+  }
+  else if (cmd == "look:left") {
+    setServo(180);
+    publishStatus("Servo:180");
+  }
+  else if (cmd == "look:right") {
+    setServo(0);
+    publishStatus("Servo:0");
+  }
+  else if (cmd == "look:center") {
+    setServo(90);
+    publishStatus("Servo:90");
+  }
+  // Ultrasonic commands
+  else if (cmd == "dist" || cmd == "distance") {
+    float dist = getDistance();
+    Serial.print("Distance: ");
+    Serial.print(dist, 1);
+    Serial.println(" cm");
+    publishStatus("Dist:" + String(dist, 1) + "cm");
+  }
+  else if (cmd == "scan") {
+    scanSweep();
+    publishStatus("ScanDone");
+  }
+  // Radar commands
+  else if (cmd == "radar" || cmd == "radar:once") {
+    startRadar(false);  // single sweep
+  }
+  else if (cmd == "radar:continuous" || cmd == "radar:on") {
+    startRadar(true);   // continuous sweeping
+  }
+  else if (cmd == "radar:stop" || cmd == "radar:off") {
+    stopRadar();
+    publishStatus("RadarDone");
   }
   else {
     Serial.print("Unknown: ");
@@ -153,30 +309,60 @@ void handleSerial() {
   executeCommand(cmd);
 }
 
+// ===== Wi-Fi Recovery (non-blocking) =====
+unsigned long lastWifiCheck = 0;
+
+void checkWifiConnection() {
+  if (millis() - lastWifiCheck < 10000) return;  // check every 10s
+  lastWifiCheck = millis();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (wifiConnected) {
+      wifiConnected = false;
+      Serial.println("WiFi: Lost connection, reconnecting...");
+    }
+    WiFi.reconnect();
+  } else if (!wifiConnected) {
+    wifiConnected = true;
+    Serial.print("WiFi: Reconnected ");
+    Serial.println(WiFi.localIP());
+  }
+}
+
 // ===== Setup =====
 void setup() {
   Serial.begin(115200);
-  delay(500); // Wait for serial
+  delay(500);
 
   Serial.println();
-  Serial.println("========================");
-  Serial.println("WOFFY 2.0 - MQTT ROBUST");
-  Serial.println("========================");
-  Serial.println("Changelog v2:");
-  Serial.println("  - Smooth motor ramping (no instant reversals)");
-  Serial.println("  - Fixed LED polarity (HIGH=on)");
-  Serial.println("  - Fixed front motor direction (FL/FR swapped)");
-  Serial.println("  - Fixed stale MQTT state detection");
-  Serial.println("  - Serial uses shared executeCommand");
-  Serial.println("========================");
+  Serial.println("======================================");
+  Serial.println("WOFFY 2.0 — PERFORMANCE EDITION");
+  Serial.println("======================================");
+  Serial.println("  - 20kHz PWM (silent motors)");
+  Serial.println("  - Fast ramp (4ms/15step)");
+  Serial.println("  - HTTP fast path + MQTT");
+  Serial.println("  - Non-blocking demo");
+  Serial.println("  - Watchdog timer (8s)");
+  Serial.println("  - Servo + Ultrasonic");
+  Serial.println("======================================");
 
-  pinMode(LED_PIN, OUTPUT);
-  setLED(false);
+  // Watchdog timer — auto-reset if loop hangs for 8s
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = 8000,
+    .idle_core_mask = 0,
+    .trigger_panic = true
+  };
+  esp_task_wdt_reconfigure(&wdt_config);
+  esp_task_wdt_add(NULL);
 
-  setupMotors();
+  setupServo();       // FIRST — needs its own 50Hz LEDC channel
+  setupUltrasonic();
+  setupMotors();      // LAST — 20kHz channels for motors
+  setRadarPublisher(radarPublish);
 
   // Connect to WiFi
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WOFFY_SSID, WOFFY_PASS);
 
   Serial.print("WiFi: ");
@@ -193,6 +379,9 @@ void setup() {
     wifiConnected = true;
     Serial.print("WiFi: OK ");
     Serial.println(WiFi.localIP());
+
+    // Start HTTP server
+    setupHTTPServer();
   } else {
     Serial.println("WiFi: FAILED!");
   }
@@ -207,12 +396,25 @@ unsigned long lastWifiPub = 0;
 unsigned long lastReconnect = 0;
 
 void loop() {
+  // Feed watchdog
+  esp_task_wdt_reset();
+
+  // Core tasks
   handleSerial();
   updateMotors();
-  updateLED();
+  updateDemo();
+  updateRadar();
 
+  // HTTP server — handle incoming requests
+  if (wifiConnected) {
+    server.handleClient();
+  }
+
+  // Wi-Fi recovery
+  checkWifiConnection();
+
+  // MQTT
   if (MQTT_ENABLED) {
-    // Sync flag with actual connection state
     if (mqttConnected && !mqttClient.connected()) {
       mqttConnected = false;
       Serial.println("MQTT: Connection lost");
@@ -229,7 +431,7 @@ void loop() {
         lastWifiPub = millis();
       }
     } else {
-      // Try reconnect every 5 seconds
+      // Reconnect every 5s
       if (millis() - lastReconnect > 5000) {
         lastReconnect = millis();
         mqttReconnect();
