@@ -34,8 +34,18 @@ Status is published back to `woffy/status`.
 Motors are driven directly with PWM pairs (pin1=speed, pin2=0 for forward; reversed for backward). Default speed is PWM 180 (~70% / ~210 RPM). Speed range is 60–255.
 
 ### GPIO Pin Map (L293D)
-- Front-Left: GPIO 25 / 26 — Front-Right: GPIO 27 / 14
-- Rear-Left: GPIO 18 / 19 — Rear-Right: GPIO 21 / 22
+- Front-Left: GPIO 14 / 27 — Front-Right: GPIO 26 / 25
+- Rear-Left: GPIO 18 / 19 — Rear-Right: GPIO 32 / 33
+
+### I2C Devices (SDA=21, SCL=22)
+- MCP23017 GPIO Expander: addr 0x20
+- 8x VL53L0X ToF Sensors: XSHUT via MCP23017 GPA0-GPA7, addrs 0x30-0x37
+
+### ToF Sensor Map (MCP23017 GPA → VL53L0X)
+- GPA0: Cliff-Front (downward 45°) | GPA1: Cliff-Back (downward 45°)
+- GPA2: Front-Right | GPA3: Front-Center | GPA4: Front-Left
+- GPA5: Back-Center | GPA6: Left | GPA7: Right
+- Cliff sensors detect table edges/stairs (large distance = no floor)
 
 ### iOS App (`mobile app/woffy mini/`)
 

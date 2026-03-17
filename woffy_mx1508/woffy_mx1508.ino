@@ -8,6 +8,7 @@
 #include <PubSubClient.h>
 #include <esp_task_wdt.h>
 #include "config.h"
+#include "sensors.h"
 #include "motors.h"
 #include "html.h"
 
@@ -49,6 +50,7 @@ void handleWifiStatus() {
 
 void handleStatus() {
   float dist = getDistance();
+  readSensors();
   String json = "{";
   json += "\"ip\":\"" + WiFi.localIP().toString() + "\"";
   json += ",\"wifi\":" + String(wifiConnected ? "true" : "false");
@@ -59,6 +61,17 @@ void handleStatus() {
   json += ",\"rssi\":" + String(WiFi.RSSI());
   json += ",\"uptime\":" + String(millis() / 1000);
   json += ",\"last_cmd\":\"" + lastCommand + "\"";
+  json += ",\"sensors\":{";
+  json += "\"fc\":" + String(sensorMM[S_FRONT_C]);
+  json += ",\"fl\":" + String(sensorMM[S_FRONT_L]);
+  json += ",\"fr\":" + String(sensorMM[S_FRONT_R]);
+  json += ",\"cf\":" + String(sensorMM[S_CLIFF_F]);
+  json += ",\"l\":" + String(sensorMM[S_LEFT]);
+  json += ",\"r\":" + String(sensorMM[S_RIGHT]);
+  json += ",\"bc\":" + String(sensorMM[S_BACK_C]);
+  json += ",\"cb\":" + String(sensorMM[S_CLIFF_B]);
+  json += ",\"active\":" + String(sensorsActive);
+  json += "}";
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -66,8 +79,20 @@ void handleStatus() {
 void handleRadarPoint() {
   // Single radar reading at current servo angle
   float dist = getDistance();
-  if (dist <= 0 || dist > 200) dist = 200;
+  if (dist <= 0 || dist > 100) dist = 100;
   String json = "{\"angle\":" + String(servoAngle) + ",\"distance\":" + String(dist, 1) + "}";
+  server.send(200, "application/json", json);
+}
+
+void handleTof() {
+  readSensors();
+  String json = "{";
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    if (i > 0) json += ",";
+    json += "\"" + String(sensorNames[i]) + "\":" + String(sensorMM[i]);
+  }
+  json += ",\"active\":" + String(sensorsActive);
+  json += "}";
   server.send(200, "application/json", json);
 }
 
@@ -77,6 +102,7 @@ void setupHTTPServer() {
   server.on("/wifi/status", handleWifiStatus);
   server.on("/status", handleStatus);
   server.on("/radar", handleRadarPoint);
+  server.on("/tof", handleTof);
   server.begin();
   Serial.print("HTTP: http://");
   Serial.println(WiFi.localIP());
@@ -153,6 +179,12 @@ void radarPublish(int angle, float distance) {
   Serial.println(distance, 1);
 }
 
+// ===== Autopilot publisher =====
+void autoStatusPublish(const String& status) {
+  publishStatus(status);
+  Serial.println(status);
+}
+
 // ===== Non-blocking Demo =====
 enum DemoState { DEMO_IDLE, DEMO_FWD1, DEMO_PAUSE, DEMO_FWD2 };
 DemoState demoState = DEMO_IDLE;
@@ -202,12 +234,40 @@ void updateDemo() {
 void executeCommand(const String& cmd) {
   lastCommand = cmd;
 
+  // Autopilot commands
+  if (cmd == "autopilot" || cmd == "auto" || cmd == "selfdrv") {
+    if (isRadarActive()) stopRadar();
+    startAutopilot();
+    return;
+  }
+  if (cmd == "autopilot:stop" || cmd == "auto:stop" || cmd == "selfdrv:stop") {
+    stopAutopilot();
+    return;
+  }
+
+  // Any manual movement command cancels autopilot
+  if (isAutopilotActive()) {
+    if (cmd == "fwd" || cmd == "forward" || cmd == "w" ||
+        cmd == "bwd" || cmd == "backward" || cmd == "s" ||
+        cmd == "left" || cmd == "a" ||
+        cmd == "right" || cmd == "d" ||
+        cmd == "stop" || cmd == "x") {
+      stopAutopilot();
+      Serial.println("Autopilot: cancelled by manual command");
+    }
+  }
+
   if (cmd == "demo" || cmd == "sequence") {
     startDemo();
     return;
   }
 
   if (cmd.startsWith("speed:")) {
+    if (isAutopilotActive()) {
+      Serial.println("Speed locked in autopilot mode");
+      publishStatus("Speed:locked");
+      return;
+    }
     currentSpeed = cmd.substring(6).toInt();
     if (currentSpeed < 60) currentSpeed = 60;
     if (currentSpeed > 255) currentSpeed = 255;
@@ -290,6 +350,12 @@ void executeCommand(const String& cmd) {
     stopRadar();
     publishStatus("RadarDone");
   }
+  // ToF sensor commands
+  else if (cmd == "tof") {
+    readSensors();
+    printSensors();
+    publishStatus(sensorString());
+  }
   else {
     Serial.print("Unknown: ");
     Serial.println(cmd);
@@ -341,24 +407,27 @@ void setup() {
   Serial.println("  - 20kHz PWM (silent motors)");
   Serial.println("  - Fast ramp (4ms/15step)");
   Serial.println("  - HTTP fast path + MQTT");
-  Serial.println("  - Non-blocking demo");
+  Serial.println("  - Autopilot self-driving");
   Serial.println("  - Watchdog timer (8s)");
-  Serial.println("  - Servo + Ultrasonic");
+  Serial.println("  - Servo + Ultrasonic + Autopilot");
   Serial.println("======================================");
 
-  // Watchdog timer — auto-reset if loop hangs for 8s
+  // Watchdog timer — auto-reset if loop hangs for 15s
   esp_task_wdt_config_t wdt_config = {
-    .timeout_ms = 8000,
+    .timeout_ms = 15000,
     .idle_core_mask = 0,
     .trigger_panic = true
   };
   esp_task_wdt_reconfigure(&wdt_config);
   esp_task_wdt_add(NULL);
 
-  setupServo();       // FIRST — needs its own 50Hz LEDC channel
+  setupSensors();     // I2C + MCP23017 + 8x VL53L0X
+  calibrateCliff();   // measure floor distance for cliff detection
+  setupServo();       // needs its own 50Hz LEDC channel
   setupUltrasonic();
-  setupMotors();      // LAST — 20kHz channels for motors
+  setupMotors();      // 20kHz channels for motors
   setRadarPublisher(radarPublish);
+  setAutoPublisher(autoStatusPublish);
 
   // Connect to WiFi
   WiFi.mode(WIFI_STA);
@@ -382,6 +451,7 @@ void setup() {
 
     // Start HTTP server
     setupHTTPServer();
+
   } else {
     Serial.println("WiFi: FAILED!");
   }
@@ -404,8 +474,9 @@ void loop() {
   updateMotors();
   updateDemo();
   updateRadar();
+  updateAutopilot();
 
-  // HTTP server — handle incoming requests
+  // HTTP server
   if (wifiConnected) {
     server.handleClient();
   }
